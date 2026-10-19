@@ -79,7 +79,7 @@ const model = (over) => ({
 const fixture = {
   ts: 0,
   fetchedAt: '21:30:00',
-  total: 24.66,
+  total: 25.0,
   currency: 'USD',
   active: { wallet: 'vercel', provider: 'vercel', model: 'deepseek/deepseek-v4.1-flash-1017', source: 'session' },
   primaryWallet: 'vercel',
@@ -87,9 +87,9 @@ const fixture = {
   nous: {
     ok: true,
     name: 'Nous Portal',
-    balance: 19.38,
+    balance: 20.0,
     subscriptionUsd: 0,
-    purchasedUsd: 19.38,
+    purchasedUsd: 20.0,
     monthSpent: 0.5,
     monthCap: 1000,
     totalUsed: null,
@@ -99,15 +99,15 @@ const fixture = {
     spent24h: 0.5,
     spent7d: 0.5,
     burn: { perHour: 0.3318, perDay: 7.964, windowMin: 91, samples: 16 },
-    runwayDays: 2.4,
-    runwayHours: 58.4,
+    runwayDays: 2.5,
+    runwayHours: 60.3,
     role: 'fallback',
     topUp: { url: 'https://portal.nousresearch.com/billing?topup=open', label: 'add credit', minUsd: 5 }
   },
   vercel: {
     ok: true,
     name: 'Vercel AI Gateway',
-    balance: 4.24,
+    balance: 5.0,
     subscriptionUsd: null,
     purchasedUsd: null,
     monthSpent: null,
@@ -119,8 +119,8 @@ const fixture = {
     spent24h: 0.68,
     spent7d: 0.68,
     burn: { perHour: 0.5179, perDay: 12.43, windowMin: 91, samples: 16 },
-    runwayDays: 0.3,
-    runwayHours: 8.2,
+    runwayDays: 0.4,
+    runwayHours: 9.7,
     role: 'active',
     topUp: { url: 'https://vercel.com/d?to=%2F%5Bteam%5D%2F~%2Fai-gateway', label: 'add credit' }
   },
@@ -182,12 +182,12 @@ const checks = [
   ['per-wallet counts', html.includes('28 Nous · 3 Vercel')],
   ['spend rate row', html.includes('$0.52/hr')],
   ['per-minute row', html.includes('/min')],
-  ['runway row', html.includes('8.2 hours') && html.includes('2.4 days')],
+  ['runway row', html.includes('9.7 hours') && html.includes('2.5 days')],
   ['peak tag', html.includes('peak ×2 until 04:00Z')],
   ['add credit per wallet', (html.match(/add credit/g) || []).length === 2],
   ['nous minimum shown', html.includes('min $5')],
   ['vercel top-up link', html.includes('vercel.com/d?to=')],
-  ['chip renders total', chipHtml.includes('$24.66')]
+  ['chip renders total', chipHtml.includes('$25.00')]
 ]
 
 let ok = true
