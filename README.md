@@ -19,6 +19,8 @@ A Hermes desktop pane that shows what your AI wallets are actually doing: Nous P
 | runway at this rate | balance ÷ measured rate |
 | **+ add credit** | opens that wallet's top-up surface in your browser |
 
+The status-bar chip next to the clock shows the combined total at a glance; clicking it refreshes both wallets.
+
 The `● in use` badge and accent border mark the wallet that is billing **the chat you are currently looking at** — not the profile default. A composer model pick beats config for one session, and this widget reads the session's live route, so the dot follows the chat.
 
 **Model picks** — five price bands (dirt cheap → frontier), best price-for-capability in each:
@@ -52,6 +54,52 @@ Then load the desktop half. Two ways, and they behave differently:
 2. **Leave it in the package:** the app copies `plugins/wallets/desktop/` into the app root and stamps a marker, which makes the pane **opt-in** — enable it in Settings → Capabilities → Plugins.
 
 The Python half only imports when the plugin is in `plugins.enabled` in `config.yaml` (that's the security boundary, not a preference). Backend route changes need an app restart: mounted `/api/plugins/wallets` routes are never re-imported in place.
+
+### After you install
+
+Restart the app, then open a chat and look for a **wallets** pane docked on the right, plus a `$12.34` chip in the status bar. The first poll lands within a second; after that it refreshes every 60 s (↻ forces one).
+
+Two rows fill in later, by design:
+
+- **spend rate / per minute / runway** show `measuring…` until two balance samples exist at least 5 minutes apart. The pane samples every 5 minutes while it is open, so a fresh install needs ~10 minutes before it can measure anything.
+- **24h / 7d spend** read the same history file, so both show the same number until you have a week of samples.
+
+## Troubleshooting
+
+**No pane after restart.** The desktop half has to be in `~/.hermes/desktop-plugins/wallets/plugin.js`. If you left it inside the plugin package instead, the app copies it over with a marker, which makes it **opt-in**: Settings → Capabilities → Plugins → enable `wallets`. If it still doesn't appear, ⌘K/Ctrl+K → **Reload desktop plugins** (or Settings → Plugins → **Rescan**).
+
+**A wallet card says `—` with an error line.** The pane fails per wallet, not as a whole. `no AI_GATEWAY_API_KEY in $HERMES_HOME/.env` means the Vercel key is missing; `not logged in to Nous Portal` means `hermes portal login` hasn't been run. The other card keeps working.
+
+**`backend: …` at the top.** The Python half isn't mounted. Check `hermes plugins list` shows `wallets enabled`, then restart — mounted plugin routes are never re-imported in place, so a disable/enable cycle alone won't pick up code changes.
+
+**Model picks section is empty.** The catalogue fetch needs the Vercel key even if you only care about Nous: the model list, prices and peak windows all come from the gateway's `/v1/models`. Without a key there is nothing to rank.
+
+**`in use` sits on the wrong wallet.** It follows the focused chat's live route, so a composer model pick beats config. Switch the model in the composer and the dot moves within one poll.
+
+**Numbers look wrong after a top-up.** Spend rate counts only balance drops, so a top-up won't show as negative spend — but the runway will jump. History is in `$HERMES_HOME/state/wallets-history.json`; deleting it resets all rate measurements.
+
+## How it's put together
+
+| File | Role |
+|---|---|
+| `plugin.yaml` | Agent-half manifest (name, version, description) |
+| `__init__.py` | Deliberately empty `register()` — the package registers no tools or hooks |
+| `dashboard/manifest.json` | Declares `plugin_api.py` as this plugin's backend |
+| `dashboard/plugin_api.py` | All data: balances, burn rate, model picks, sale + peak annotation |
+| `desktop/plugin.js` | The pane and the chip; only talks to `ctx.rest('/state')` |
+| `dev/render-check.mjs` | Renders the real pane to static HTML and asserts 20 things |
+
+Data flows one way: the pane asks `/state`, the backend fetches from the providers with their own caching, and nothing in the renderer ever sees a token.
+
+## Uninstall
+
+```bash
+hermes plugins disable wallets
+rm -rf ~/.hermes/plugins/wallets ~/.hermes/desktop-plugins/wallets
+rm -f ~/.hermes/state/wallets-*.json
+```
+
+The last line removes the balance history and cached catalogues; leave them if you plan to reinstall and want your rates back.
 
 ## Requirements
 

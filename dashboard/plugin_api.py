@@ -46,11 +46,15 @@ _CACHE: dict[str, Any] = {"at": 0.0, "payload": None}
 # ── paths ────────────────────────────────────────────────────────────────────
 
 def _hermes_home() -> Path:
+    """$HERMES_HOME (default ~/.hermes) - profile-safe, so a named profile reads its own state."""
+
     env = os.environ.get("HERMES_HOME")
     return Path(env) if env else Path.home() / ".hermes"
 
 
 def _history_path() -> Path:
+    """Where balance samples live: the only state this plugin writes."""
+
     return _hermes_home() / "state" / "wallets-history.json"
 
 
@@ -72,6 +76,8 @@ def _read_dotenv_key(name: str) -> Optional[str]:
 
 
 def _ai_gateway_key() -> Optional[str]:
+    """Gateway key from the environment, else $HERMES_HOME/.env. None when absent."""
+
     for name in ("AI_GATEWAY_API_KEY", "VERCEL_AI_GATEWAY_API_KEY"):
         val = os.environ.get(name) or _read_dotenv_key(name)
         if val:
@@ -80,12 +86,16 @@ def _ai_gateway_key() -> Optional[str]:
 
 
 def _mask(key: str) -> str:
+    """First and last few characters of a key - display only, never the whole secret."""
+
     return f"{key[:5]}…{key[-4:]}" if len(key) > 12 else f"{key[:3]}…"
 
 
 # ── history ──────────────────────────────────────────────────────────────────
 
 def _load_history() -> list[dict[str, Any]]:
+    """Samples as [{t, vercel, nous}]. Missing or corrupt file means no history, never a crash."""
+
     try:
         raw = json.loads(_history_path().read_text(encoding="utf-8"))
         return [s for s in raw if isinstance(s, dict) and isinstance(s.get("t"), (int, float))]
@@ -94,6 +104,8 @@ def _load_history() -> list[dict[str, Any]]:
 
 
 def _save_history(samples: list[dict[str, Any]]) -> None:
+    """Atomic replace, so an interrupted write cannot truncate the sample file."""
+
     path = _history_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -105,6 +117,8 @@ def _save_history(samples: list[dict[str, Any]]) -> None:
 
 
 def _maybe_sample(history: list[dict[str, Any]], vercel_bal: Optional[float], nous_bal: Optional[float]) -> list[dict[str, Any]]:
+    """Append a sample at most every SAMPLE_INTERVAL seconds, pruning to HISTORY_MAX."""
+
     now = time.time()
     if vercel_bal is None and nous_bal is None:
         return history
@@ -171,6 +185,8 @@ _WALLET_FOR_PROVIDER = {
 
 
 def _wallet_for(provider: Optional[str]) -> Optional[str]:
+    """Provider name -> wallet key, so config names and wallet names agree."""
+
     return _WALLET_FOR_PROVIDER.get(str(provider or "").strip().lower())
 
 
@@ -220,6 +236,8 @@ def _session_route(session_id: Optional[str]) -> Optional[dict[str, Any]]:
 # ── Vercel AI Gateway ────────────────────────────────────────────────────────
 
 def _vercel() -> dict[str, Any]:
+    """Vercel AI Gateway balance, lifetime spend and top-up link. Fail-open per wallet."""
+
     key = _ai_gateway_key()
     out: dict[str, Any] = {"ok": False, "name": "Vercel AI Gateway", "balance": None,
                            "totalUsed": None, "keyHint": None, "error": None}
@@ -410,6 +428,8 @@ def _peak_state(pricing: dict[str, Any], now: Optional[datetime] = None) -> dict
 
 
 def _hhmm(minute_of_day: int) -> str:
+    """Minute-of-day -> HH:MM, for rendering UTC peak windows."""
+
     return f"{(minute_of_day // 60) % 24:02d}:{minute_of_day % 60:02d}"
 
 
@@ -599,6 +619,8 @@ def _annotate_sales(rows: list[dict[str, Any]]) -> None:
 
 
 def _percentile_ranks(values: list[float]) -> list[float]:
+    """Fraction of the list below each value (ties averaged) - the basis of both indicators."""
+
     ordered = sorted(values)
     n = len(ordered)
     if n == 0:
@@ -621,6 +643,8 @@ def _grade(value: float) -> str:
 
 
 def _blurb(row: dict[str, Any], current: bool) -> str:
+    """One line of plain English: what the model is good for, plus its context size."""
+
     bits = [label for tag, label in _BLURB_TAGS if tag in row["tags"]][:2]
     ctx = row["ctx"]
     span = f"{ctx / 1_000_000:.1f}M ctx" if ctx >= 1_000_000 else (f"{ctx // 1000}k ctx" if ctx else "")
@@ -633,6 +657,8 @@ _PICKS_CACHE: dict[str, Any] = {"key": None, "at": 0.0, "value": None}
 
 
 def _picks(current_id: Optional[str]) -> dict[str, Any]:
+    """Five price bands, the best price-for-capability in each, plus sales and the current model."""
+
     now = time.time()
     if _PICKS_CACHE["key"] == current_id and now - float(_PICKS_CACHE["at"]) < 600:
         return _PICKS_CACHE["value"]
@@ -652,6 +678,9 @@ def _picks(current_id: Optional[str]) -> dict[str, Any]:
     avg = blends[len(blends) // 2]
 
     def shape(row: dict[str, Any]) -> dict[str, Any]:
+        # Wire format for one model row: rounded prices + verdict + the badges
+        # the pane renders. Kept in one place so tiers, sales and "current" all
+        # emit identical shapes.
         return {
             "id": row["id"],
             "short": row["id"].split("/", 1)[-1],
@@ -674,6 +703,8 @@ def _picks(current_id: Optional[str]) -> dict[str, Any]:
         }
 
     def best_in(lo: float, hi: float) -> Optional[dict[str, Any]]:
+        # Best value inside one price band, gated on capability: without the
+        # gate the cheapest junk wins every band (an embedding model "cheap workhorse").
         in_band = [r for r in rows if lo <= r["blended"] < hi]
         # Above-median capability, else the cheapest junk wins every band.
         candidates = [r for r in in_band if "tool-use" in r["tags"] and r.get("capPct", 0) >= 0.55]
@@ -742,6 +773,8 @@ def _picks(current_id: Optional[str]) -> dict[str, Any]:
 # ── Nous Portal ──────────────────────────────────────────────────────────────
 
 def _num(value: Any) -> Optional[float]:
+    """Money as float, tolerating currency-symbol strings; None when unparseable."""
+
     try:
         f = float(str(value).replace("$", "").strip())
         return f
@@ -750,6 +783,8 @@ def _num(value: Any) -> Optional[float]:
 
 
 def _nous() -> dict[str, Any]:
+    """Nous Portal balance, month spend, credit split and top-up link. Fail-open per wallet."""
+
     out: dict[str, Any] = {
         "ok": False, "name": "Nous Portal", "balance": None, "subscriptionUsd": None,
         "purchasedUsd": None, "monthSpent": None, "monthCap": None, "plan": None,
@@ -806,6 +841,7 @@ def _nous() -> dict[str, Any]:
         access = getattr(info, "paid_service_access_info", None)
 
         def field(name: str) -> Any:
+            # Now a frozen dataclass, formerly a dict — tolerate both spellings.
             if isinstance(access, dict):
                 return access.get(name)
             return getattr(access, name, None)
@@ -871,6 +907,8 @@ def _decorate(payload: dict[str, Any], session_id: Optional[str]) -> dict[str, A
 
 
 def build_state(force: bool = False, session_id: Optional[str] = None) -> dict[str, Any]:
+    """Cached dollar payload, then decorated per request (roles, picks, session route)."""
+
     now = time.time()
     with _LOCK:
         cached = _CACHE["payload"]
@@ -942,10 +980,14 @@ def _record_hit() -> None:
 
 @router.get("/state")
 def state(force: bool = False, session_id: Optional[str] = None) -> dict[str, Any]:
+    """GET /state - the pane's single data call; session_id selects that chat's route."""
+
     _record_hit()
     return build_state(force=force, session_id=session_id)
 
 
 @router.get("/health")
 def health() -> dict[str, Any]:
+    """Liveness probe used by the plugin doctor and during development."""
+
     return {"ok": True, "plugin": "wallets"}

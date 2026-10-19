@@ -17,21 +17,28 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 const ID = 'wallets'
 const REFRESH_MS = 60_000
 
+// Handles captured from register(ctx); module scope so the chip and pane share one backend door.
 let rest = null
 let osDoor = null
 let storage = null
+/** GET/POST against this plugin's own backend namespace (/api/plugins/wallets). */
 const api = (path, opts) => (rest ? rest(path, opts) : Promise.reject(new Error('backend unavailable')))
 
+/** Open a provider page in the user's browser. Routed through ctx.os so the
+ *  plugin stays attributed and the app never navigates itself. */
 const openUrl = (url) => {
   if (!url) return
   if (osDoor && osDoor.openExternal) osDoor.openExternal(url)
 }
 
+/** `$1,234.56`; an em dash for anything unparseable, so a partial payload
+ *  reads as "missing" instead of "$0.00". */
 const money = (v) =>
   v === null || v === undefined || Number.isNaN(Number(v))
     ? '—'
     : `$${Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
+/** Status-bar form: `$1.2k` above a thousand, two decimals below. */
 const compact = (v) => {
   const n = Number(v || 0)
   if (n >= 1000) return `$${(n / 1000).toFixed(1)}k`
@@ -54,6 +61,8 @@ function useWallets() {
   return { ...query, sessionId }
 }
 
+/** Query string for a forced refresh, keeping the focused chat's id attached
+ *  so the response still describes THIS chat's billing route. */
 const forceQs = (sessionId) =>
   sessionId ? `?force=true&session_id=${encodeURIComponent(sessionId)}` : '?force=true'
 
