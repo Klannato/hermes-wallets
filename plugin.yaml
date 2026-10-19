@@ -1,0 +1,4 @@
+name: wallets
+version: "0.1.0"
+description: Live Nous Portal + Vercel AI Gateway wallet balances, monthly spend and 24h/7d burn rate in a desktop pane.
+author: hermes

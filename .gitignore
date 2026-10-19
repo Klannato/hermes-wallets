@@ -1,0 +1,15 @@
+__pycache__/
+plugin-under-test.mjs
+.wallets-render-check-*.mjs
+*.py[cod]
+.DS_Store
+
+# runtime state / caches: balances, history, model catalogues, credentials
+state/
+*.log
+.env
+.env.*
+wallets-history.json
+wallets-pane-hits.json
+wallets-models.json
+wallets-nous-models.json

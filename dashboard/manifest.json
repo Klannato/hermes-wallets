@@ -1,0 +1,8 @@
+{
+  "name": "wallets",
+  "label": "Wallets",
+  "description": "Nous Portal + Vercel AI Gateway balances, monthly spend and burn rate.",
+  "icon": "Wallet",
+  "version": "0.1.0",
+  "api": "plugin_api.py"
+}
