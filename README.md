@@ -3,9 +3,9 @@
 A Hermes desktop pane that shows what your AI wallets are actually doing: Nous Portal and Vercel AI Gateway balances, live spend rate, runway, which wallet is billing the chat you're looking at, and a price-aware model shortlist.
 
 
-![the wallets pane: Nous Portal and Vercel AI Gateway balances, spend rate and runway, with the model picks and on-sale sections open](docs/wallets-pane.png)
+<img src="docs/wallets-pane.png" width="300" alt="the wallets pane: Nous Portal and Vercel AI Gateway cards with balances, spend rate and runway, and the model picks list">
 
-*The pane docked in a live session: both wallets, measured spend rate and runway, the model shortlist with its price/performance spectrum, and the discounted models. Captured from a running session, not a mockup.*
+*The pane docked in a live session: both wallets with measured spend rate and runway, and the model shortlist. Sections fold independently, so only one is expanded in this capture. Screenshot from a running app, not a mockup.*
 
 ## What it shows
 
