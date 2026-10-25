@@ -5,11 +5,11 @@ A Hermes desktop pane that shows what your AI wallets are actually doing: Nous P
 
 <img src="docs/wallets-pane.png" width="300" alt="the wallets pane: Nous Portal and Vercel AI Gateway cards with balances, spend rate and runway, and the model picks list">
 
-*The pane docked in a live session: both wallets with measured spend rate and runway, and the model shortlist. Sections fold independently, so only one is expanded in this capture. Screenshot from a running app, not a mockup.*
+*The pane docked in a live session: wallet cards with measured spend rate and runway, plus the model shortlist. Every section and every card folds independently, so only some are expanded in this capture. Screenshot from a running app, not a mockup.*
 
 ## What it shows
 
-**Wallets** — one card per account:
+**Wallets** — one card per account, discovered from your Hermes config:
 
 | Row | Meaning |
 |---|---|
@@ -23,7 +23,9 @@ A Hermes desktop pane that shows what your AI wallets are actually doing: Nous P
 | runway at this rate | balance ÷ measured rate |
 | **+ add credit** | opens that wallet's top-up surface in your browser |
 
-The status-bar chip next to the clock shows the combined total at a glance; clicking it refreshes both wallets.
+Each card folds independently — click its header. Folded, it still shows the balance and role, so a collapsed wallet never hides the number. Balance-less wallets start folded (they exist to tell you where to buy credits) and keep their **add credit** link visible while folded.
+
+The status-bar chip next to the clock shows the combined total at a glance, with a per-wallet breakdown in its tooltip; a pulsing dot means a measured burn rate is non-zero somewhere.
 
 The `● in use` badge and accent border mark the wallet that is billing **the chat you are currently looking at** — not the profile default. A composer model pick beats config for one session, and this widget reads the session's live route, so the dot follows the chat.
 
@@ -104,6 +106,23 @@ rm -f ~/.hermes/state/wallets-*.json
 ```
 
 The last line removes the balance history and cached catalogues; leave them if you plan to reinstall and want your rates back.
+
+## Which wallets appear
+
+The pane asks Hermes what it is configured with — credential pool, `model.provider`, the fallback chain, and any `providers` entries — and renders a card for each distinct wallet. **Adding a gateway or marketplace in Hermes is the only step.** No entry here, no plugin edit.
+
+Balance figures need that provider to expose a balance API. Currently:
+
+| Wallet | Balance | Source |
+|---|---|---|
+| Vercel AI Gateway | yes | `GET /v1/credits` |
+| Nous Portal | yes | Hermes' billing client |
+| OpenRouter | yes | `GET /api/v1/credits` (needs `OPENROUTER_API_KEY`) |
+| everything else | no | card shows "no balance API" + a top-up link |
+
+A wallet with no balance API still earns its place: it can be the `in use` wallet, which tells you *where* the spend is going even when the number lives in someone else's dashboard. Adding an adapter for another credits endpoint is ~25 lines (see `_openrouter_card` in `dashboard/plugin_api.py`).
+
+A provider billing a fraction past zero is shown as `$0.00` with an **empty** tag rather than a negative balance.
 
 ## Requirements
 

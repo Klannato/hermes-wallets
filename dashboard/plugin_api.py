@@ -92,9 +92,26 @@ def _mask(key: str) -> str:
 
 
 # ── history ──────────────────────────────────────────────────────────────────
+#
+# One sample is {t, bals: {wallet_id: balance}}. The flat {vercel, nous} shape of
+# earlier versions is migrated on read, so an upgrade doesn't lose the samples
+# that make rates measurable.
+
+def _sample_bals(sample: dict[str, Any]) -> dict[str, float]:
+    """Balances from one sample, tolerating the pre-registry flat shape."""
+    bals = sample.get("bals")
+    if isinstance(bals, dict):
+        return {k: float(v) for k, v in bals.items() if isinstance(v, (int, float))}
+    legacy: dict[str, float] = {}
+    for key in ("vercel", "nous"):
+        value = sample.get(key)
+        if isinstance(value, (int, float)):
+            legacy[key] = float(value)
+    return legacy
+
 
 def _load_history() -> list[dict[str, Any]]:
-    """Samples as [{t, vercel, nous}]. Missing or corrupt file means no history, never a crash."""
+    """Samples as [{t, bals}]. Missing or corrupt file means no history, never a crash."""
 
     try:
         raw = json.loads(_history_path().read_text(encoding="utf-8"))
@@ -116,29 +133,33 @@ def _save_history(samples: list[dict[str, Any]]) -> None:
         pass
 
 
-def _maybe_sample(history: list[dict[str, Any]], vercel_bal: Optional[float], nous_bal: Optional[float]) -> list[dict[str, Any]]:
-    """Append a sample at most every SAMPLE_INTERVAL seconds, pruning to HISTORY_MAX."""
+def _maybe_sample(history: list[dict[str, Any]], balances: dict[str, Optional[float]]) -> list[dict[str, Any]]:
+    """Append a sample at most every SAMPLE_INTERVAL seconds, pruning to HISTORY_MAX.
 
+    Only wallets that actually report a balance are recorded; an unreachable or
+    balance-less wallet must not write None and poison its own history.
+    """
     now = time.time()
-    if vercel_bal is None and nous_bal is None:
+    bals = {k: float(v) for k, v in (balances or {}).items() if isinstance(v, (int, float))}
+    if not bals:
         return history
     if history and now - float(history[-1]["t"]) < SAMPLE_INTERVAL:
         return history
-    history.append({"t": now, "vercel": vercel_bal, "nous": nous_bal})
+    history.append({"t": now, "bals": bals})
     trimmed = history[-HISTORY_MAX:]
     _save_history(trimmed)
     return trimmed
 
 
-def _burn_rate(history: list[dict[str, Any]], key: str, hours: float = 6.0) -> Optional[dict[str, Any]]:
-    """Spend per hour from sampled balances, plus the runway it implies.
+def _burn_rate(history: list[dict[str, Any]], wallet_id: str, hours: float = 6.0) -> Optional[dict[str, Any]]:
+    """Spend per hour for one wallet, plus the runway it implies.
 
     Only negative deltas count, so a top-up mid-window can't mask real spend.
     Needs two samples at least 5 minutes apart; returns None rather than
     pretending a single sample is a rate.
     """
     cutoff = time.time() - hours * 3600
-    window = [s for s in history if float(s["t"]) >= cutoff and s.get(key) is not None]
+    window = [s for s in history if float(s["t"]) >= cutoff and wallet_id in _sample_bals(s)]
     if len(window) < 2:
         return None
     span = float(window[-1]["t"]) - float(window[0]["t"])
@@ -146,7 +167,7 @@ def _burn_rate(history: list[dict[str, Any]], key: str, hours: float = 6.0) -> O
         return None
     spent = 0.0
     for prev, cur in zip(window, window[1:]):
-        drop = float(prev[key]) - float(cur[key])
+        drop = _sample_bals(prev)[wallet_id] - _sample_bals(cur)[wallet_id]
         if drop > 0:
             spent += drop
     per_hour = spent / (span / 3600.0)
@@ -158,8 +179,8 @@ def _burn_rate(history: list[dict[str, Any]], key: str, hours: float = 6.0) -> O
     }
 
 
-def _spend_since(history: list[dict[str, Any]], key: str, seconds: float, current: Optional[float]) -> Optional[float]:
-    """Amount spent in the window, from balance deltas.
+def _spend_since(history: list[dict[str, Any]], wallet_id: str, seconds: float, current: Optional[float]) -> Optional[float]:
+    """Amount spent in the window for one wallet, from balance deltas.
 
     Sums only negative deltas between consecutive samples so a top-up in the
     middle of the window doesn't cancel out real spending.
@@ -167,27 +188,174 @@ def _spend_since(history: list[dict[str, Any]], key: str, seconds: float, curren
     if current is None or len(history) < 2:
         return None
     cutoff = time.time() - seconds
-    window = [s for s in history if float(s["t"]) >= cutoff and s.get(key) is not None]
+    window = [s for s in history if float(s["t"]) >= cutoff and wallet_id in _sample_bals(s)]
     if not window:
         return None
     total = 0.0
     for prev, cur in zip(window, window[1:]):
-        drop = float(prev[key]) - float(cur[key])
+        drop = _sample_bals(prev)[wallet_id] - _sample_bals(cur)[wallet_id]
         if drop > 0:
             total += drop
     return round(total, 4)
 
 
-_WALLET_FOR_PROVIDER = {
-    "vercel": "vercel", "ai-gateway": "vercel", "aigateway": "vercel", "vercel-ai-gateway": "vercel",
-    "nous": "nous", "nous-api": "nous",
+# ── wallet registry ──────────────────────────────────────────────────────────
+#
+# Discovery asks Hermes which providers it is configured with; the alias table
+# below only decides how a provider id is SPELLED as a wallet. Adding a gateway
+# in Hermes is therefore enough for it to appear — a balance number additionally
+# needs that provider to expose one, which is what the adapters are for.
+
+_WALLET_ALIASES: dict[str, tuple[str, ...]] = {
+    "vercel": ("vercel", "ai-gateway", "aigateway", "vercel-ai-gateway"),
+    "nous": ("nous", "nous-api"),
+    "openrouter": ("openrouter",),
+    "openai": ("openai", "openai-codex", "codex"),
+    "anthropic": ("anthropic", "claude"),
+    "google": ("google", "gemini", "google-vertex"),
+    "deepseek": ("deepseek",),
+    "xai": ("xai", "xai-oauth", "grok"),
+    "copilot": ("copilot", "github-copilot"),
+    "mistral": ("mistral",),
+    "groq": ("groq",),
+    "together": ("together", "togetherai"),
+    "fireworks": ("fireworks",),
+    "zai": ("zai", "zhipu"),
+    "moonshot": ("moonshot", "kimi", "kimi-coding"),
+    "minimax": ("minimax", "minimax-cn"),
+    "huggingface": ("huggingface",),
+    "nvidia": ("nvidia",),
+    "lmstudio": ("lmstudio",),
 }
+
+_WALLET_LABELS: dict[str, str] = {
+    "vercel": "Vercel AI Gateway",
+    "nous": "Nous Portal",
+    "openrouter": "OpenRouter",
+    "openai": "OpenAI",
+    "anthropic": "Anthropic",
+    "google": "Google AI",
+    "deepseek": "DeepSeek",
+    "xai": "xAI",
+    "copilot": "GitHub Copilot",
+    "mistral": "Mistral",
+    "groq": "Groq",
+    "together": "Together AI",
+    "fireworks": "Fireworks AI",
+    "zai": "Z.ai",
+    "moonshot": "Moonshot / Kimi",
+    "minimax": "MiniMax",
+    "huggingface": "Hugging Face",
+    "nvidia": "NVIDIA NIM",
+    "lmstudio": "LM Studio",
+}
+
+# Where you go to put money in. Providers without a public balance API still get
+# a card and a link — knowing where to top up is the point of the wallet.
+_WALLET_TOPUP: dict[str, str] = {
+    "vercel": VERCEL_TOPUP_URL,
+    "nous": "https://portal.nousresearch.com" + NOUS_TOPUP_SUFFIX,
+    "openrouter": "https://openrouter.ai/settings/credits",
+    "openai": "https://platform.openai.com/settings/organization/billing",
+    "anthropic": "https://console.anthropic.com/settings/billing",
+    "google": "https://aistudio.google.com/app/billing",
+    "deepseek": "https://platform.deepseek.com/top_up",
+    "xai": "https://console.x.ai/team/default/billing",
+    "mistral": "https://console.mistral.ai/billing",
+    "groq": "https://console.groq.com/settings/billing",
+    "together": "https://api.together.ai/settings/billing",
+    "fireworks": "https://fireworks.ai/account/billing",
+    "zai": "https://z.ai/manage-apikey/billing",
+    "moonshot": "https://platform.moonshot.ai/console/account",
+    "minimax": "https://platform.minimax.io/user-center/basic-information/interface-key",
+    "huggingface": "https://huggingface.co/settings/billing",
+    "copilot": "https://github.com/settings/copilot",
+    "nvidia": "https://build.nvidia.com/settings/billing",
+}
+
+_ALIAS_TO_WALLET: dict[str, str] = {
+    alias: wallet for wallet, aliases in _WALLET_ALIASES.items() for alias in aliases
+}
+
+
+def _canonical_wallet(provider: Optional[str]) -> Optional[str]:
+    """Provider id -> wallet id. Unknown providers keep their own id (they still
+    get a card, just without a balance adapter)."""
+    key = str(provider or "").strip().lower()
+    if not key:
+        return None
+    if key in _ALIAS_TO_WALLET:
+        return _ALIAS_TO_WALLET[key]
+    # `custom:foo` and plugin providers: no balance API, but a real wallet name.
+    return key.split(":", 1)[0] or key
 
 
 def _wallet_for(provider: Optional[str]) -> Optional[str]:
     """Provider name -> wallet key, so config names and wallet names agree."""
+    return _canonical_wallet(provider)
 
-    return _WALLET_FOR_PROVIDER.get(str(provider or "").strip().lower())
+
+def _configured_providers() -> list[str]:
+    """Every provider id Hermes knows about, in the order it would try them.
+
+    Credential pool + config + fallback chain. Read-only, and only ids — no
+    secret ever leaves those sources.
+    """
+    ids: list[str] = []
+    try:
+        from hermes_cli.auth import read_credential_pool
+
+        ids.extend(str(k) for k in (read_credential_pool() or {}))
+    except Exception:  # noqa: BLE001 — discovery is advisory
+        pass
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        model_cfg = cfg.get("model") or {}
+        primary = model_cfg.get("provider")
+        if primary:
+            ids.append(str(primary))
+        chain = cfg.get("fallback_providers") or []
+        if isinstance(chain, dict):
+            chain = [chain]
+        for entry in chain:
+            if isinstance(entry, dict) and entry.get("provider"):
+                ids.append(str(entry["provider"]))
+        providers_cfg = cfg.get("providers") or {}
+        if isinstance(providers_cfg, dict):
+            ids.extend(str(k) for k in providers_cfg)
+    except Exception:  # noqa: BLE001
+        pass
+    return ids
+
+
+def _wallet_specs() -> list[dict[str, Any]]:
+    """Wallet cards to render: discovered providers, deduped by wallet id."""
+    order = _configured_providers()
+    primary = _canonical_wallet((_config_route() or {}).get("primary"))
+    fallbacks = [w for w in (_config_route() or {}).get("fallbacks") or []]
+
+    specs: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for provider in order:
+        wallet = _canonical_wallet(provider)
+        if not wallet or wallet in seen:
+            continue
+        seen.add(wallet)
+        specs.append({"id": wallet, "provider": provider})
+
+    # Active first, then the configured chain, then everything else alphabetically.
+    def rank(spec: dict[str, Any]) -> tuple[int, int, str]:
+        wallet = spec["id"]
+        if wallet == primary:
+            return (0, 0, wallet)
+        if wallet in fallbacks:
+            return (1, fallbacks.index(wallet), wallet)
+        return (2, 0, wallet)
+
+    specs.sort(key=rank)
+    return specs
 
 
 def _config_route() -> dict[str, Any]:
@@ -869,6 +1037,74 @@ def _nous() -> dict[str, Any]:
 
 # ── assembly ─────────────────────────────────────────────────────────────────
 
+def _openrouter_card() -> dict[str, Any]:
+    """OpenRouter: credits bought minus credits used, from their key endpoint."""
+    key = os.environ.get("OPENROUTER_API_KEY") or _read_dotenv_key("OPENROUTER_API_KEY")
+    card: dict[str, Any] = {"ok": False, "balance": None, "error": None}
+    if not key:
+        card["error"] = "no OPENROUTER_API_KEY in $HERMES_HOME/.env"
+        return card
+    req = urllib.request.Request(
+        "https://openrouter.ai/api/v1/credits",
+        headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+            payload = json.loads(resp.read().decode("utf-8", "replace")) or {}
+        data = payload.get("data") or {}
+        purchased = _num(data.get("total_credits"))
+        used = _num(data.get("total_usage"))
+        if purchased is None:
+            card["error"] = "unexpected /credits payload"
+            return card
+        card["balance"] = round(purchased - (used or 0.0), 6)
+        card["totalUsed"] = round(used, 6) if used is not None else None
+        card["ok"] = True
+    except urllib.error.HTTPError as exc:
+        card["error"] = f"HTTP {exc.code} from OpenRouter"
+    except Exception as exc:  # noqa: BLE001 — fail open per wallet
+        card["error"] = f"{type(exc).__name__}: {str(exc)[:120]}"
+    return card
+
+
+def _adapter_for(wallet_id: str):
+    """Balance fetcher for a wallet id, or None when the provider has no such API."""
+    return {
+        "vercel": _vercel,
+        "nous": _nous,
+        "openrouter": _openrouter_card,
+    }.get(wallet_id)
+
+
+def _wallet_card(spec: dict[str, Any]) -> dict[str, Any]:
+    """One wallet: its balance data if the provider exposes any, plus its links."""
+    wallet_id = spec["id"]
+    adapter = _adapter_for(wallet_id)
+    if adapter is not None:
+        card = dict(adapter() or {})
+    else:
+        card = {
+            "ok": False,
+            "balance": None,
+            "error": None,
+            "note": "no balance API — usage is metered where you bought the key",
+        }
+    balance = card.get("balance")
+    if balance is not None and float(balance) <= 0:
+        # A provider can bill a hair past zero; show empty, not a negative wallet.
+        card["depleted"] = True
+        card["rawBalance"] = float(balance)
+        card["balance"] = 0.0
+    card.update({
+        "id": wallet_id,
+        "name": _WALLET_LABELS.get(wallet_id, wallet_id.replace("-", " ").title()),
+        "provider": spec.get("provider"),
+        "hasBalance": adapter is not None,
+        "topUp": {"url": _WALLET_TOPUP[wallet_id], "label": "add credit"} if wallet_id in _WALLET_TOPUP else None,
+    })
+    return card
+
+
 def _decorate(payload: dict[str, Any], session_id: Optional[str]) -> dict[str, Any]:
     """Per-request layer: which wallet is billing right now.
 
@@ -882,17 +1118,32 @@ def _decorate(payload: dict[str, Any], session_id: Optional[str]) -> dict[str, A
     active_wallet = _wallet_for(active_provider)
 
     out = dict(payload)
-    for key in ("vercel", "nous"):
-        wallet = dict(out.get(key) or {})
-        if key == active_wallet:
+    wallets = [dict(w) for w in out.get("wallets") or []]
+    for wallet in wallets:
+        wallet_id = wallet.get("id")
+        if wallet_id == active_wallet:
             wallet["role"] = "active"
-        elif key == route.get("primary"):
+        elif wallet_id == route.get("primary"):
             wallet["role"] = "primary"
-        elif key in (route.get("fallbacks") or []):
+        elif wallet_id in (route.get("fallbacks") or []):
             wallet["role"] = "fallback"
         else:
             wallet["role"] = None
-        out[key] = wallet
+
+    # Active first so the wallet you are paying with is never below the fold,
+    # then the configured chain in its own order, then everything else.
+    rank = {"active": 0, "primary": 1, "fallback": 2}
+
+    def order(wallet: dict[str, Any]) -> tuple[int, int, str]:
+        role = wallet.get("role")
+        if role == "fallback":
+            chain = route.get("fallbacks") or []
+            idx = chain.index(wallet.get("id")) if wallet.get("id") in chain else 99
+            return (2, idx, "")
+        return (rank.get(role, 3), 0, str(wallet.get("id")))
+
+    wallets.sort(key=order)
+    out["wallets"] = wallets
 
     out["active"] = {
         "wallet": active_wallet,
@@ -915,39 +1166,44 @@ def build_state(force: bool = False, session_id: Optional[str] = None) -> dict[s
         if not force and cached is not None and now - float(_CACHE["at"]) < CACHE_TTL:
             return _decorate(cached, session_id)
 
-    vercel = _vercel()
-    nous = _nous()
+    specs = _wallet_specs()
+    cards = [_wallet_card(spec) for spec in specs]
+
+    # Back-compat: nothing discovered at all (fresh profile, no creds) still gets
+    # the two cards this plugin was born with, so the pane is never empty.
+    if not cards:
+        cards = [_wallet_card({"id": "vercel"}), _wallet_card({"id": "nous"})]
 
     history = _load_history()
-    history = _maybe_sample(history, vercel.get("balance"), nous.get("balance"))
+    history = _maybe_sample(history, {c["id"]: c.get("balance") for c in cards})
 
-    for wallet, key in ((vercel, "vercel"), (nous, "nous")):
-        wallet["spent24h"] = _spend_since(history, key, 24 * 3600, wallet.get("balance"))
-        wallet["spent7d"] = _spend_since(history, key, 7 * 24 * 3600, wallet.get("balance"))
-        wallet["burn"] = _burn_rate(history, key)
-        burn = wallet["burn"]
-        balance = wallet.get("balance")
+    for card in cards:
+        wallet_id = card["id"]
+        card["spent24h"] = _spend_since(history, wallet_id, 24 * 3600, card.get("balance"))
+        card["spent7d"] = _spend_since(history, wallet_id, 7 * 24 * 3600, card.get("balance"))
+        card["burn"] = _burn_rate(history, wallet_id)
+        burn = card["burn"]
+        balance = card.get("balance")
         if burn and balance is not None and burn["perHour"] > 0:
             # Hours straight from the hourly rate: rounding days to 1dp first
             # turned 8.2 h into "7 hours" (0.3 d * 24).
-            wallet["runwayHours"] = round(float(balance) / burn["perHour"], 1)
-            wallet["runwayDays"] = round(float(balance) / burn["perDay"], 1) if burn["perDay"] > 0 else None
+            card["runwayHours"] = round(float(balance) / burn["perHour"], 1)
+            card["runwayDays"] = round(float(balance) / burn["perDay"], 1) if burn["perDay"] > 0 else None
         else:
-            wallet["runwayHours"] = None
-            wallet["runwayDays"] = None
+            card["runwayHours"] = None
+            card["runwayDays"] = None
 
     total = 0.0
     have_total = False
-    for w in (vercel, nous):
-        if w.get("balance") is not None:
-            total += float(w["balance"])
+    for card in cards:
+        if card.get("balance") is not None:
+            total += float(card["balance"])
             have_total = True
 
     payload = {
         "ts": now,
         "fetchedAt": time.strftime("%H:%M:%S"),
-        "vercel": vercel,
-        "nous": nous,
+        "wallets": cards,
         "total": round(total, 2) if have_total else None,
         "sampleCount": len(history),
         "currency": "USD",

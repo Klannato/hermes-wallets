@@ -125,122 +125,168 @@ function Row({ label, value, title }) {
   })
 }
 
-function WalletCard({ w, openHref, openLabel }) {
+/** One wallet. Foldable per card, because a pane can now hold any number of
+ *  them: the header keeps the balance visible while folded, so a collapsed
+ *  wallet still answers "how much is left". */
+function WalletCard({ w }) {
   const failed = !w.ok
   const active = w.role === 'active'
+  // Wallets with a real balance start open; balance-less ones start folded so
+  // they don't push the ones you can act on below the fold.
+  const [open, toggle] = useCollapsed(`wallet:${w.id}`, Boolean(w.hasBalance))
+  const depleted = Boolean(w.depleted)
+  const summary = failed ? (w.hasBalance ? 'unavailable' : 'no balance API') : money(w.balance)
+
   return jsxs('div', {
     className: 'flex flex-col gap-1.5 rounded-md p-2.5',
     style: { border: `1px solid ${active ? 'var(--ui-accent)' : 'var(--ui-stroke-secondary)'}` },
     children: [
-      jsxs('div', {
-        className: 'flex items-center justify-between gap-2',
+      jsxs('button', {
+        type: 'button',
+        className: cn(
+          'flex w-full items-center justify-between gap-2 rounded text-left',
+          'hover:bg-(--chrome-action-hover)'
+        ),
+        title: open ? `Fold ${w.name}` : `Unfold ${w.name}`,
+        onClick: toggle,
         children: [
-          jsx('div', {
-            className: 'text-[0.6875rem] font-medium uppercase tracking-wide',
-            style: { color: 'var(--ui-text-tertiary)' },
-            children: w.name
+          jsxs('span', {
+            className: 'flex min-w-0 items-center gap-1',
+            children: [
+              jsx('span', {
+                className: 'text-[0.5rem]',
+                style: { color: 'var(--ui-text-quaternary)', flex: '0 0 auto' },
+                children: open ? '▾' : '▸'
+              }),
+              jsx('span', {
+                className: 'truncate text-[0.6875rem] font-medium uppercase tracking-wide',
+                style: { color: 'var(--ui-text-tertiary)' },
+                children: w.name
+              })
+            ]
           }),
-          jsxs('div', {
+          jsxs('span', {
             className: 'flex items-center gap-1.5',
             children: [
               jsx(RoleBadge, { role: w.role }),
-              jsx('button', {
-                type: 'button',
-                title: openLabel,
-                className: cn('rounded px-1 text-[0.6875rem]', 'hover:bg-(--chrome-action-hover)'),
-                style: { color: 'var(--ui-text-quaternary)' },
-                onClick: () => {
-                  haptic('tap')
-                  openUrl(openHref)
-                },
-                children: '↗'
-              })
+              // Folded, the card still shows what it is worth.
+              open
+                ? null
+                : jsx('span', {
+                    className: 'tabular-nums text-[0.625rem]',
+                    style: { color: 'var(--ui-text-secondary)', flex: '0 0 auto' },
+                    children: summary
+                  })
             ]
           })
         ]
       }),
-      jsx('div', {
-        className: 'text-[1.375rem] font-semibold leading-none tabular-nums',
-        children: failed ? '—' : money(w.balance)
-      }),
-      failed
-        ? jsx('div', {
-            className: 'text-[0.6875rem] leading-snug',
-            style: { color: 'var(--ui-text-quaternary)' },
-            children: w.error || 'unavailable'
-          })
-        : jsxs('div', {
+      // A wallet with no balance API exists to tell you where to buy credits,
+      // so its link stays visible while the card is folded.
+      !open && w.topUp ? jsx(CreditLink, { topUp: w.topUp }) : null,
+      open
+        ? jsxs('div', {
             className: 'flex flex-col gap-1',
             children: [
-              w.subscriptionUsd || w.purchasedUsd
-                ? jsx(Row, {
-                    label: 'top-up / plan',
-                    value: `${money(w.purchasedUsd || 0)} / ${money(w.subscriptionUsd || 0)}`,
-                    title: 'Purchased credits / subscription credits'
-                  })
-                : null,
-              w.monthSpent !== null && w.monthSpent !== undefined
-                ? jsx(Row, {
-                    label: 'spent this month',
-                    value: w.monthSpent > 0 ? money(w.monthSpent) : 'none yet',
-                    title: w.monthCap ? `Monthly cap ${money(w.monthCap)}` : 'Spend this calendar month'
-                  })
-                : null,
-              w.totalUsed !== null && w.totalUsed !== undefined
-                ? jsx(Row, {
-                    label: 'lifetime used',
-                    value: money(w.totalUsed),
-                    title: 'Cumulative AI Gateway spend on this key'
-                  })
-                : null,
-              jsx(Row, {
-                label: 'spent last 24h / 7d',
-                value: `${w.spent24h === null || w.spent24h === undefined ? '—' : money(w.spent24h)} / ${
-                  w.spent7d === null || w.spent7d === undefined ? '—' : money(w.spent7d)
-                }`,
-                title: 'Measured spend over the last 24 hours and 7 days, from sampled balances'
-              }),
-              w.burn
-                ? jsx(Row, {
-                    label: 'spend rate',
-                    value: `${money(w.burn.perHour)}/hr · ${money(w.burn.perDay)}/day`,
-                    title: `Averaged over the last ${w.burn.windowMin} min (${w.burn.samples} balance samples)`
-                  })
-                : jsx(Row, {
-                    label: 'spend rate',
-                    value: 'measuring…',
-                    title: 'Needs two balance samples at least 5 minutes apart — the pane samples every 5 min while open'
+              jsxs('div', {
+                className: 'flex items-baseline gap-1.5',
+                children: [
+                  jsx('div', {
+                    className: 'text-[1.375rem] font-semibold leading-none tabular-nums',
+                    children: failed ? '—' : money(w.balance)
                   }),
-              w.burn && w.burn.perHour
-                ? jsx(Row, {
-                    label: 'spent per minute',
-                    value: `$${(w.burn.perHour / 60).toFixed(4)}/min`,
-                    title: 'Same window as the spend rate, divided by 60'
-                  })
-                : null,
-              w.runwayDays !== null && w.runwayDays !== undefined
-                ? jsx(Row, {
-                    label: 'runway at this rate',
-                    value:
-                      w.runwayDays >= 1
-                        ? `${w.runwayDays} days`
-                        : `${w.runwayHours !== null && w.runwayHours !== undefined ? w.runwayHours : Math.round(w.runwayDays * 24)} hours`,
-                    title: 'Current balance divided by the per-day spend rate — a projection, not a promise'
-                  })
-                : null,
-              w.keyHint || w.tier
+                  depleted
+                    ? jsx('span', {
+                        className: 'text-[0.5625rem] uppercase tracking-wide',
+                        style: { color: 'var(--ui-orange)' },
+                        title: w.rawBalance !== null && w.rawBalance !== undefined
+                          ? `Provider reports ${w.rawBalance.toFixed(4)}: spent out`
+                          : 'spent out',
+                        children: 'empty'
+                      })
+                    : null
+                ]
+              }),
+              failed
                 ? jsx('div', {
-                    className: 'text-[0.625rem]',
+                    className: 'text-[0.6875rem] leading-snug',
                     style: { color: 'var(--ui-text-quaternary)' },
-                    children: [w.keyHint ? `key ${w.keyHint}` : null, w.tier ? `tier ${w.tier}` : null]
-                      .filter(Boolean)
-                      .join(' · ')
+                    children: w.error || w.note || 'unavailable'
                   })
-                : null,
+                : jsxs('div', {
+                    className: 'flex flex-col gap-1',
+                    children: [
+                      w.subscriptionUsd || w.purchasedUsd
+                        ? jsx(Row, {
+                            label: 'top-up / plan',
+                            value: `${money(w.purchasedUsd || 0)} / ${money(w.subscriptionUsd || 0)}`,
+                            title: 'Purchased credits / subscription credits'
+                          })
+                        : null,
+                      w.monthSpent !== null && w.monthSpent !== undefined
+                        ? jsx(Row, {
+                            label: 'spent this month',
+                            value: w.monthSpent > 0 ? money(w.monthSpent) : 'none yet',
+                            title: w.monthCap ? `Monthly cap ${money(w.monthCap)}` : 'Spend this calendar month'
+                          })
+                        : null,
+                      w.totalUsed !== null && w.totalUsed !== undefined
+                        ? jsx(Row, {
+                            label: 'lifetime used',
+                            value: money(w.totalUsed),
+                            title: 'Cumulative spend recorded by the provider'
+                          })
+                        : null,
+                      jsx(Row, {
+                        label: 'spent last 24h / 7d',
+                        value: `${w.spent24h === null || w.spent24h === undefined ? '—' : money(w.spent24h)} / ${
+                          w.spent7d === null || w.spent7d === undefined ? '—' : money(w.spent7d)
+                        }`,
+                        title: 'Measured spend over the last 24 hours and 7 days, from sampled balances'
+                      }),
+                      w.burn
+                        ? jsx(Row, {
+                            label: 'spend rate',
+                            value: `${money(w.burn.perHour)}/hr · ${money(w.burn.perDay)}/day`,
+                            title: `Averaged over the last ${w.burn.windowMin} min (${w.burn.samples} balance samples)`
+                          })
+                        : jsx(Row, {
+                            label: 'spend rate',
+                            value: 'measuring…',
+                            title: 'Needs two balance samples at least 5 minutes apart — the pane samples every 5 min while open'
+                          }),
+                      w.burn && w.burn.perHour
+                        ? jsx(Row, {
+                            label: 'spent per minute',
+                            value: `$${(w.burn.perHour / 60).toFixed(4)}/min`,
+                            title: 'Same window as the spend rate, divided by 60'
+                          })
+                        : null,
+                      w.runwayDays !== null && w.runwayDays !== undefined
+                        ? jsx(Row, {
+                            label: 'runway at this rate',
+                            value:
+                              w.runwayDays >= 1
+                                ? `${w.runwayDays} days`
+                                : `${w.runwayHours !== null && w.runwayHours !== undefined ? w.runwayHours : Math.round(w.runwayDays * 24)} hours`,
+                            title: 'Current balance divided by the per-day spend rate — a projection, not a promise'
+                          })
+                        : null,
+                      w.keyHint || w.tier
+                        ? jsx('div', {
+                            className: 'text-[0.625rem]',
+                            style: { color: 'var(--ui-text-quaternary)' },
+                            children: [w.keyHint ? `key ${w.keyHint}` : null, w.tier ? `tier ${w.tier}` : null]
+                              .filter(Boolean)
+                              .join(' · ')
+                          })
+                        : null
+                    ]
+                  }),
               jsx(CreditLink, { topUp: w.topUp })
             ]
-          }),
-      failed ? jsx(CreditLink, { topUp: w.topUp }) : null
+          })
+        : null
     ]
   })
 }
@@ -436,7 +482,15 @@ function PickRow({ model, tierLabel }) {
               jsx('span', {
                 className: 'truncate text-[0.6875rem]',
                 children: model.short + (model.current ? ' · you' : '')
-              })
+              }),
+              model.grade === 'good'
+                ? jsx('span', {
+                    className: 'text-[0.5rem] font-medium uppercase tracking-wide',
+                    style: { color: 'var(--ui-green)', flex: '0 0 auto' },
+                    title: 'good deal: strong capability for its price',
+                    children: 'good deal'
+                  })
+                : null
             ]
           }),
           jsx('span', {
@@ -468,9 +522,10 @@ function PickRow({ model, tierLabel }) {
 
 function billingLine(data) {
   if (!data || !data.active) return null
-  const wallet = data.active.wallet
-  const name = wallet === 'nous' ? 'Nous Portal' : wallet === 'vercel' ? 'Vercel AI Gateway' : null
-  if (!name) return 'no route resolved'
+  const walletId = data.active.wallet
+  if (!walletId) return 'no route resolved'
+  const card = (data.wallets || []).find((w) => w.id === walletId)
+  const name = (card && card.name) || walletId
   const scope = data.active.source === 'session' ? 'this chat' : 'profile default'
   return `billing → ${name} · ${scope}`
 }
@@ -660,27 +715,15 @@ function WalletsPane() {
             ]
           })
         : null,
-      data
-        ? jsx(WalletCard, {
-            w: data.nous,
-            openHref: 'https://portal.nousresearch.com/billing',
-            openLabel: 'Open Nous billing'
-          })
-        : null,
-      data
-        ? jsx(WalletCard, {
-            w: data.vercel,
-            openHref: 'https://vercel.com/dashboard/ai-gateway',
-            openLabel: 'Open Vercel AI Gateway usage'
-          })
-        : null,
+      // Every wallet Hermes is configured with, in the backend's order (active
+      // first). Adding a gateway in Hermes is enough for a card to appear.
+      ...(data && data.wallets ? data.wallets.map((w) => jsx(WalletCard, { w }, w.id)) : []),
       data && data.picks ? jsx(ModelPicks, { picks: data.picks }) : null,
-      data && !data.nous.ok && !data.vercel.ok
+      data && data.wallets && data.wallets.length && data.wallets.every((w) => !w.ok)
         ? jsx('div', {
             className: 'text-[0.625rem] leading-snug',
             style: { color: 'var(--ui-text-quaternary)' },
-            children:
-              'Login/keys: `hermes portal login` for Nous, AI_GATEWAY_API_KEY in ~/.hermes/.env for Vercel.'
+            children: 'No wallet reports a balance. Keys live in ~/.hermes/.env, logins via `hermes auth`.'
           })
         : null
     ]
@@ -691,11 +734,19 @@ function WalletsChip() {
   const q = useWallets()
   const d = q.data
   const label = d ? compact(d.total) : '—'
-  const route = d && d.active ? (d.active.wallet === 'nous' ? 'Nous' : d.active.wallet === 'vercel' ? 'Vercel' : null) : null
+  const wallets = (d && d.wallets) || []
+  const activeCard = wallets.find((w) => w.id === (d && d.active && d.active.wallet))
+  // A positive measured burn rate anywhere means tokens are being spent right
+  // now — blink a dot next to the total so the spend is visible at a glance.
+  const spending = wallets.some((w) => w.burn && Number(w.burn.perHour) > 0)
+  const breakdown = wallets
+    .filter((w) => w.balance !== null && w.balance !== undefined)
+    .map((w) => `${w.name} ${money(w.balance)}`)
+    .join(' · ')
   return jsx('button', {
     type: 'button',
     title: d
-      ? `Nous ${money(d.nous.balance)} · Vercel ${money(d.vercel.balance)}${route ? ` — billing ${route}` : ''}`
+      ? `${breakdown || 'no balances'}${activeCard ? ` — billing ${activeCard.name}` : ''}`
       : 'Wallet balances unavailable',
     className: cn(
       'inline-flex h-full items-center gap-1 px-1.5 text-[0.6875rem] tabular-nums transition-colors',
@@ -706,7 +757,21 @@ function WalletsChip() {
       haptic('tap')
       api(`/state${forceQs(q.sessionId)}`)
     },
-    children: label
+    children: [
+      spending
+        ? jsx(
+            'span',
+            {
+              className: 'inline-block size-1.5 rounded-full animate-pulse',
+              style: { background: 'var(--ui-accent)' },
+              title: 'tokens being spent',
+              'aria-label': 'tokens being spent'
+            },
+            'spend-dot'
+          )
+        : null,
+      jsx('span', { children: label }, 'total')
+    ]
   })
 }
 
