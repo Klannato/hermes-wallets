@@ -1,3 +1,6 @@
+# local project handoff (contains balances + account state)
+HANDOFF.md
+
 __pycache__/
 plugin-under-test.mjs
 .wallets-render-check-*.mjs
